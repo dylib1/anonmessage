@@ -1,11 +1,11 @@
 import socket
 import threading
 import sys
+import random
 from datetime import datetime
 
 clients = {}
 nicknames = {}
-messages_history = []
 
 HOST = "0.0.0.0"
 PORT = 56789
@@ -16,17 +16,28 @@ server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 try:
     server.bind((HOST, PORT))
 except OSError as e:
-    print("Failed to start server:", e)
-    print("Port might be already in use. Try another port.")
     sys.exit(1)
 
 server.listen()
-print("\n" + "═"*60)
-local_ip = socket.gethostbyname(socket.gethostname())
-print(f"  Server started →  {local_ip}:{PORT}  ")
-print(f"  You can also use:  127.0.0.1:{PORT}  (localhost only)")
-print("═"*60 + "\n")
+print("\n" + "="*60)
+
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    local_ip = s.getsockname()[0]
+    s.close()
+except:
+    local_ip = socket.gethostbyname(socket.gethostname())
+
+print(f"Server started -> {local_ip}:{PORT}")
+print(f"Local access:   127.0.0.1:{PORT}")
 print("Waiting for connections...\n")
+
+def generate_anonymous_nick():
+    adjectives = ["Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Gray", "Dark", "Light", "Cyber"]
+    nouns = ["Fox", "Wolf", "Eagle", "Shark", "Phoenix", "Ghost", "Shadow", "Storm", "Thunder", "Spirit"]
+    number = random.randint(10, 99)
+    return f"{random.choice(adjectives)}{random.choice(nouns)}{number}"
 
 def broadcast(message, sender_addr=None):
     for addr, client in list(clients.items()):
@@ -41,17 +52,18 @@ def broadcast(message, sender_addr=None):
                 del nicknames[addr]
 
 def handle_client(client, addr):
-    print(f"Connected: {addr}")
-    
-    temp_nick = f"User{len(clients)}"
+    temp_nick = generate_anonymous_nick()
     nicknames[addr] = temp_nick
     clients[addr] = client
     
-    welcome = f"→ You connected as {temp_nick}\n"
+    print(f"New user connected: {temp_nick}")
+    
+    welcome = f"-> You are {temp_nick}\n"
     client.send(welcome.encode("utf-8"))
     
-    for msg in messages_history[-30:]:
-        client.send(msg.encode("utf-8"))
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    join_message = f"\n[{timestamp}] {temp_nick} joined\n"
+    broadcast(join_message.encode("utf-8"), sender_addr=addr)
     
     buffer = ""
     
@@ -71,28 +83,28 @@ def handle_client(client, addr):
                     continue
                 
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                formatted = f"[{timestamp}] {nicknames[addr]} → {message}\n"
+                formatted = f"[{timestamp}] {nicknames[addr]} -> {message}\n"
                 
                 print(formatted, end="", flush=True)
-                messages_history.append(formatted)
-
-                if len(messages_history) > 100:
-                    messages_history.pop(0)
                 
                 broadcast(formatted.encode("utf-8"), addr)
                 
-        except UnicodeDecodeError as e:
-            print(f"Unicode error with {addr}: {e}")
-            try:
-                data = client.recv(8192).decode("utf-8", errors="ignore")
-                buffer += data
-            except:
-                break
         except Exception as e:
-            print(f"Error with {addr}: {e}")
             break
     
-    print(f"Disconnected: {addr}")
+    if addr in nicknames:
+        print(f"User disconnected: {nicknames[addr]}")
+        
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        leave_message = f"\n[{timestamp}] {nicknames[addr]} left\n"
+        
+        for other_addr, other_client in list(clients.items()):
+            if other_addr != addr:
+                try:
+                    other_client.send(leave_message.encode("utf-8"))
+                except:
+                    pass
+    
     client.close()
     if addr in clients:
         del clients[addr]
@@ -108,8 +120,6 @@ def main():
         except KeyboardInterrupt:
             print("\nServer shutting down...")
             break
-        except Exception as e:
-            print("Accept error:", e)
     
     server.close()
 
