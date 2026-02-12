@@ -3,11 +3,13 @@ import threading
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, simpledialog
 from datetime import datetime
+import random
+import string
 
 class ChatClient:
     def __init__(self, master):
         self.master = master
-        self.master.title("anonsessage")
+        self.master.title("anonmessage")
         self.master.geometry("520x580")
         self.master.resizable(False, False)
 
@@ -21,9 +23,17 @@ class ChatClient:
         self.sock = None
         self.running = False
         self.is_dark_mode = True
+        self.session_id = self.generate_session_id()
+        self.use_proxy = False
+        self.proxy_host = ""
+        self.proxy_port = 0
 
         self.create_widgets()
+        self.ask_proxy_settings()
         self.ask_connect()
+
+    def generate_session_id(self):
+        return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
     def create_widgets(self):
         self.theme_btn = tk.Button(
@@ -113,11 +123,73 @@ class ChatClient:
         self.chat_area.see(tk.END)
         self.chat_area.configure(state='disabled')
 
+    def clear_chat(self):
+        self.chat_area.configure(state='normal')
+        self.chat_area.delete(1.0, tk.END)
+        self.chat_area.configure(state='disabled')
+
+    def self_destruct(self):
+        if messagebox.askyesno("Self Destruct", "Delete all messages and disconnect?"):
+            self.clear_chat()
+            self.append_message("Chat history destroyed\n")
+            if self.running:
+                self.on_closing()
+
+    def ask_proxy_settings(self):
+        use_proxy = messagebox.askyesno(
+            "Proxy Settings",
+            "Use SOCKS5 proxy?\n\n"
+            "Yes = Configure proxy\n"
+            "No = Direct connection"
+        )
+        
+        if use_proxy:
+            while True:
+                proxy_str = simpledialog.askstring(
+                    "SOCKS5 Proxy",
+                    "Enter SOCKS5 proxy (host:port)\n"
+                    "Example: 127.0.0.1:9050 (Tor)\n"
+                    "Example: 192.168.1.100:1080",
+                    parent=self.master
+                )
+                
+                if not proxy_str:
+                    self.use_proxy = False
+                    break
+                
+                try:
+                    host, port_str = proxy_str.split(":")
+                    port = int(port_str)
+                    self.use_proxy = True
+                    self.proxy_host = host
+                    self.proxy_port = port
+                    self.append_message(f"-> SOCKS5 proxy configured: {host}:{port}\n")
+                    break
+                except:
+                    messagebox.showerror("Error", "Invalid proxy format. Expected host:port")
+        else:
+            self.use_proxy = False
+            self.append_message("-> Direct connection (no proxy)\n")
+
+    def create_socket(self):
+        if self.use_proxy:
+            try:
+                import socks
+                sock = socks.socksocket()
+                sock.set_proxy(socks.SOCKS5, self.proxy_host, self.proxy_port)
+                return sock
+            except ImportError:
+                messagebox.showerror("Error", "PySocks module is required for proxy connection.\nInstall: pip install PySocks")
+                return None
+        else:
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
     def ask_connect(self):
         while True:
             host_port = simpledialog.askstring(
                 "Connect",
-                "Enter server address (IP:PORT)\nExample: 192.168.1.100:56789",
+                "Enter server address (IP:PORT)\n"
+                "Example: 192.168.1.100:56789",
                 parent=self.master
             )
             if not host_port:
@@ -132,32 +204,56 @@ class ChatClient:
                 messagebox.showerror("Error", "Invalid format. Expected IP:PORT")
 
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock = self.create_socket()
+            if self.sock is None:
+                self.ask_connect()
+                return
+                
             self.sock.connect((host, port))
             self.running = True
-            self.append_message("→ Connected!\n\n")
+            
+            if self.use_proxy:
+                self.append_message(f"-> Connected via SOCKS5 proxy ({self.proxy_host}:{self.proxy_port})\n\n")
+            else:
+                self.append_message("-> Connected (direct)\n\n")
 
             threading.Thread(target=self.receive_messages, daemon=True).start()
 
-            self.master.title(f"anonsessage — {host}:{port}")
+            self.master.title(f"anonmessage — {host}:{port}")
             self.msg_entry.focus()
 
+        except ImportError:
+            messagebox.showerror("Error", "PySocks module is not installed.\nPlease install: pip install PySocks")
+            self.ask_connect()
         except Exception as e:
-            messagebox.showerror("Connection Error", str(e))
+            error_msg = str(e)
+            if self.use_proxy:
+                messagebox.showerror("Proxy Connection Error", 
+                                   f"Failed to connect via proxy {self.proxy_host}:{self.proxy_port}\n\n{error_msg}")
+            else:
+                messagebox.showerror("Connection Error", error_msg)
             self.ask_connect()
 
     def receive_messages(self):
+        buffer = ""
         while self.running:
             try:
-                data = self.sock.recv(4096).decode("utf-8")
+                data = self.sock.recv(16384).decode("utf-8", errors="ignore")
                 if not data:
                     break
-                self.append_message(data)
+
+                buffer += data
+
+                while '\n' in buffer:
+                    message, buffer = buffer.split('\n', 1)
+                    if message.strip():
+                        self.append_message(message + "\n")
+
             except:
                 break
 
         if self.running:
-            self.append_message("\n!!! Connection lost !!!\n")
+            self.append_message("\n!!! Connection lost\n")
             self.running = False
 
     def send_message(self):
@@ -169,9 +265,22 @@ class ChatClient:
 
         if not msg:
             return
+            
+        elif msg == "/clear":
+            self.clear_chat()
+            return
+        elif msg == "/selfdestruct":
+            self.self_destruct()
+            return
+        elif msg == "/proxy":
+            status = f"Proxy: {'Enabled' if self.use_proxy else 'Disabled'}"
+            if self.use_proxy:
+                status += f" ({self.proxy_host}:{self.proxy_port})"
+            self.append_message(status + "\n")
+            return
 
         timestamp = datetime.now().strftime("%H:%M:%S")
-        local_message = f"[{timestamp}] You → {msg}\n"
+        local_message = f"[{timestamp}] You -> {msg}\n"
 
         self.append_message(local_message)
 
